@@ -3188,7 +3188,12 @@ function pushSelfIfChanged() {
     pid: ONLINE.pid, uid: ONLINE.uid, name: me.name || '', topic: me.topic || '', color: me.color || '',
     progress: progressText(me), json,
     updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-  }, { merge: true }).catch(e => console.warn('sync failed', e));
+  }, { merge: true }).then(() => { if (ONLINE._syncErr) { ONLINE._syncErr = null; showToast('已恢復同步'); } })
+    .catch(e => {
+      console.warn('sync failed', e);
+      _lastPushed = '';      // 下次再試
+      if (ONLINE._syncErr !== e.code) { ONLINE._syncErr = e.code; showToast('同步失敗：' + (e.code || e.message)); }
+    });
 }
 
 function setHeaderButton(label, onclick) {
@@ -3266,6 +3271,7 @@ async function joinRoom() {
   };
   ONLINE.pid = pid;
   beginOnlineGame(me);
+  _lastPushed = '';          // 強制上傳一次，管理員才看得到新玩家
   pushSelfIfChanged();
 }
 
@@ -3399,6 +3405,9 @@ async function openAdminRoom(code) {
           <span style="font-size:12px;color:var(--text-muted);text-align:left;">${d.progress || ''}${d.topic ? '　·　' + d.topic : ''}</span>
         </span><span class="admin-arrow">›</span>
       </button>`).join('') : '<div class="empty-state">等待玩家加入…</div>';
+  }, err => {
+    const el = document.getElementById('roomPlayers');
+    if (el) el.innerHTML = `<div class="empty-state">讀取玩家失敗：${err.code || err.message}</div>`;
   });
 }
 
