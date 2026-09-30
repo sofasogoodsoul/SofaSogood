@@ -107,6 +107,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:15
 .carry-state{font-size:12px;font-weight:400;opacity:.85;}
 .carry-type{padding:6px 14px;border-radius:20px;border:1.5px solid rgba(160,48,32,.3);background:transparent;color:#A03020;font-size:12px;cursor:pointer;}
 .carry-type.active{background:#C0503C;border-color:#C0503C;color:#fff;}
+.carry-box .orient-btn{border:1.5px solid rgba(160,48,32,.3);color:#A03020;background:transparent;}
+.carry-box .orient-btn.active{background:#C0503C;border-color:#C0503C;color:#fff;font-weight:500;}
 .carry-collapsed{cursor:pointer;padding:10px 14px;}
 .carry-arrow{margin-left:auto;font-size:16px;opacity:.7;}
 .carry-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;}
@@ -551,8 +553,9 @@ function calcPassStatus(player, phase) {
 
   const infoCards = activeInfoRolls(rolls);
   const nobles = rolls.filter(isNobleCard).length;
-  const nobleCarry = (player.nobleCarry[phase] || 0) - usedCarryCount(player, phase);
-  const totalNobles = nobles + nobleCarry;
+  // 帶入的貴人卡一定要換成訊息卡，不算這關的貴人卡；還沒換的算待處理
+  const pendingCarry = Math.max(0, (player.nobleCarry[phase] || 0) - usedCarryCount(player, phase));
+  const totalNobles = nobles;
 
   const hasTarot = infoCards.some(r => cardGroupOf(r) === 'tarot');
   const hasIssue = infoCards.some(r => cardGroupOf(r) === 'issue');
@@ -568,7 +571,7 @@ function calcPassStatus(player, phase) {
   // 方式B：任意 7 張訊息卡，不需要貴人卡
   const passB = infoCount >= 7;
   // 有未執行的放下卡 → 先不能過關，但其餘條件照樣計算
-  const blocked = pendingRelease > 0;
+  const blocked = pendingRelease > 0 || pendingCarry > 0;
   const canPass = (passA || passB) && !blocked;
 
   const missing = [];
@@ -590,16 +593,15 @@ function calcPassStatus(player, phase) {
     }
   }
 
-  return { canPass, passA, passB, blocked, pendingRelease,
+  return { canPass, passA, passB, blocked, pendingRelease, pendingCarry,
     infoCount, has3Types, hasNoble, missing, atLimit, totalNobles, releaseHint };
 }
 
 function calcNobleCarryForward(player, phase) {
   const rolls = player.phases[phase];
   const nobles = rolls.filter(isNobleCard).length;
-  const carry  = (player.nobleCarry[phase] || 0) - usedCarryCount(player, phase);
-  const used   = (nobles + carry) >= 1 ? 1 : 0;
-  return Math.max(0, nobles + carry - used);
+  // 這關踩到的貴人卡留 1 張過關，其餘帶到下一關換牌（帶入的貴人卡已經換掉，不會再往下帶）
+  return Math.max(0, nobles - 1);
 }
 
 // ── HELPERS ──
@@ -1033,7 +1035,7 @@ function renderPhaseContent() {
       const sel = cr && ct ? renderInfoCardSel(cr.id, ct, cr.cardName, cr.orientation, ct==='tarot-minor'?cr.tarotGroup:cr.guideGroup) : '';
       html += `<div class="carry-box">
         <div class="carry-title">⭐ 上一關帶來的貴人卡${carryIn>1?' #'+(ci+1):''}
-          <span class="carry-state">${cr && cr.cardName ? '已換成：'+cr.cardName+(cr.orientation?' '+cr.orientation:'') : '可抵一張訊息卡'}</span></div>
+          <span class="carry-state">${cr && cr.cardName ? '已換成：'+cr.cardName+(cr.orientation?' '+cr.orientation:'') : '需換成一張訊息卡'}</span></div>
         <div class="field-group"><div class="field-label">要換成的牌種</div>
           <div style="display:flex;flex-wrap:wrap;gap:6px;">
             ${CARRY_BTNS.map(t=>`<button class="carry-type ${ct===t.key?'active':''}" onclick="useCarryNoble(${ci},'${t.key}')">${t.label}</button>`).join('')}
@@ -1041,7 +1043,6 @@ function renderPhaseContent() {
         ${sel}
         ${cr ? `<div class="carry-actions">
           <button class="carry-save" ${cr.cardName?'':'disabled'} onclick="saveCarryNoble(${ci})">儲存</button>
-          <button class="carry-cancel" onclick="cancelCarryNoble(${ci})">不換，保留為貴人卡</button>
         </div>` : ''}
       </div>`;
     }
@@ -1056,8 +1057,10 @@ function renderPhaseContent() {
     const playerTag = `<span style="font-weight:600;font-size:17px;letter-spacing:.02em;color:${pColor}">${pName}</span>${topic ? '<span style="font-size:12px;"> · <span style="font-style:italic;opacity:.8">' + topic + '</span></span>' : ''}`;
     const topRow = '<div style="padding:4px 12px 4px;font-size:12px;line-height:1.5;">' + playerTag + '</div>';
 
-    const releaseLine = status.blocked
-      ? '<div class="status-bar warn">🍃 還有 ' + status.pendingRelease + ' 張放下卡未執行，需先放下訊息牌才能過關</div>' : '';
+    const releaseLine = (status.pendingRelease
+      ? '<div class="status-bar warn">🍃 還有 ' + status.pendingRelease + ' 張放下卡未執行，需先放下訊息牌才能過關</div>' : '')
+      + (status.pendingCarry
+      ? '<div class="status-bar warn">⭐ 還有 ' + status.pendingCarry + ' 張帶入的貴人卡要換成訊息卡</div>' : '');
     const conditionsMet = status.passA || status.passB;
     if (status.canPass) {
       const staying = player.stayPhase === currentPhase;
@@ -2346,7 +2349,7 @@ function buildAIPrompt(player) {
       const used = rolls.filter(r => r.fromCarry && r.cardName && r.carryIndex < carryIn);
       const list = used.map(r => `${cardText(r)}（${TYPE_LABEL[r.cellType]}）${handIds.has(r.id) ? '' : '〔已放下〕'}`);
       const keep = carryIn - used.length;
-      if (keep > 0) list.push(`${keep} 張保留為貴人卡`);
+      if (keep > 0) list.push(`${keep} 張尚未換牌`);
       t += `帶入貴人卡 ${carryIn} 張，換成：${list.join('、')}\n`;
       used.forEach(r => { if (handIds.has(r.id)) allCardsSeq.push({ r, ph }); });
     }
@@ -3113,7 +3116,7 @@ function showRules() {
         <div class="rules-title">過關</div>
         ${row('方式①', '4 張訊息卡（須含塔羅、議題、指引三種）＋ 1 張貴人卡')}
         ${row('方式②', '任意 7 張訊息卡')}
-        <div class="rules-note">放下卡要全部執行完才能過關。多的貴人卡帶到下一關，可換一張訊息卡。過關後可以繼續抽，最多 9 張。</div>
+        <div class="rules-note">放下卡要全部執行完才能過關。多的貴人卡帶到下一關，每張一定要換成一張訊息卡。過關後可以繼續抽，最多 9 張。</div>
       </div>
       <div class="rules-sec">
         <div class="rules-title">答案藍圖</div>
