@@ -3112,6 +3112,7 @@ var FIREBASE_CONFIG = {
 };
 var ADMIN_EMAIL = 'sofasogood.soul@gmail.com';
 var FB_VER = '10.12.2';
+var APP_BUILD = '2026-09-30b';
 var ONLINE = null;   // { mode:'player'|'admin', room, uid, db, auth, viewing }
 var _fb = null;
 var _lastPushed = '';
@@ -3184,16 +3185,28 @@ function pushSelfIfChanged() {
   const json = JSON.stringify(playerForCloud(me));
   if (json === _lastPushed) return;
   _lastPushed = json;
+  setSyncBadge('busy');
   ONLINE.db.collection('rooms').doc(ONLINE.room).collection('players').doc(ONLINE.uid).set({
     pid: ONLINE.pid, uid: ONLINE.uid, name: me.name || '', topic: me.topic || '', color: me.color || '',
     progress: progressText(me), json,
     updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-  }, { merge: true }).then(() => { if (ONLINE._syncErr) { ONLINE._syncErr = null; showToast('已恢復同步'); } })
+  }, { merge: true }).then(() => {
+      setSyncBadge('ok');
+      if (ONLINE._syncErr) { ONLINE._syncErr = null; showToast('已恢復同步'); }
+    })
     .catch(e => {
       console.warn('sync failed', e);
       _lastPushed = '';      // 下次再試
+      setSyncBadge('err', e.code || e.message);
       if (ONLINE._syncErr !== e.code) { ONLINE._syncErr = e.code; showToast('同步失敗：' + (e.code || e.message)); }
     });
+}
+
+// 玩家端右上角顯示同步狀態：場次 VZQ7 ✓（已同步）／ ⋯（上傳中）／ ⚠（失敗）
+function setSyncBadge(state, msg) {
+  if (!ONLINE || ONLINE.mode !== 'player') return;
+  const mark = state === 'ok' ? ' ✓' : state === 'err' ? ' ⚠' : ' ⋯';
+  setHeaderButton(`場次 ${ONLINE.room}${mark}`, () => showToast(state === 'err' ? '同步失敗：' + msg : state === 'ok' ? '已同步到雲端' : '上傳中…'));
 }
 
 function setHeaderButton(label, onclick) {
@@ -3236,6 +3249,7 @@ function renderJoinScreen() {
     <div>
       <div class="setup-title">✦ 加入場次 ${ONLINE.room}</div>
       <div style="margin-top:6px;font-size:13px;color:var(--text-muted)">${ONLINE.roomData.date || ''}　用你自己的手機記錄這一局</div>
+      <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">版本 ${APP_BUILD}</div>
     </div>
     <div class="player-setup-card">
       <div class="field-group"><div class="field-label">你的名字</div>
@@ -3380,14 +3394,15 @@ async function openAdminRoom(code) {
   setHeaderButton('← 場次列表', () => renderAdminHome());
   const link = roomLink(code);
   onlineScreen(`
-    <div><div class="setup-title">✦ 場次 ${code}</div></div>
+    <div><div class="setup-title">✦ 場次 ${code}</div><div style="margin-top:4px;font-size:11px;color:var(--text-dim)">版本 ${APP_BUILD}</div></div>
     <div class="player-setup-card" style="align-items:center;text-align:center;">
       <div id="roomQR" style="background:#fff;padding:10px;border-radius:8px;"></div>
       <div style="font-size:12px;color:var(--text-muted);word-break:break-all;">${link}</div>
       <button class="start-btn" onclick="copyRoomLink('${code}')">複製加入連結</button>
     </div>
     <div class="field-label">玩家（即時更新）</div>
-    <div id="roomPlayers" style="display:flex;flex-direction:column;gap:8px;"><div class="empty-state">等待玩家加入…</div></div>`);
+    <div id="roomPlayers" style="display:flex;flex-direction:column;gap:8px;"><div class="empty-state">等待玩家加入…</div></div>
+    <button onclick="deleteRoom('${code}')" style="margin-top:12px;padding:12px;border:1px solid rgba(160,48,32,.35);border-radius:var(--radius);background:transparent;color:#A03020;font-size:13px;cursor:pointer;">刪除這個場次</button>`);
   try {
     if (!window.QRCode) await loadScript('https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js');
     new QRCode(document.getElementById('roomQR'), { text: link, width: 180, height: 180 });
@@ -3409,6 +3424,26 @@ async function openAdminRoom(code) {
     const el = document.getElementById('roomPlayers');
     if (el) el.innerHTML = `<div class="empty-state">讀取玩家失敗：${err.code || err.message}</div>`;
   });
+}
+
+// 刪除場次：先刪所有玩家紀錄，再刪場次本身（刪除後無法復原）
+async function deleteRoom(code) {
+  const n = (ONLINE.roomPlayers || []).length;
+  const msg = `確定要刪除場次 ${code}？` + (n ? `\n裡面 ${n} 位玩家的紀錄會一起刪除，無法復原。` : '\n刪除後無法復原。');
+  if (!confirm(msg)) return;
+  if (_unsubPlayers) { _unsubPlayers(); _unsubPlayers = null; }
+  try {
+    const roomRef = ONLINE.db.collection('rooms').doc(code);
+    const snap = await roomRef.collection('players').get();
+    const batch = ONLINE.db.batch();
+    snap.forEach(d => batch.delete(d.ref));
+    batch.delete(roomRef);
+    await batch.commit();
+    showToast(`已刪除場次 ${code}`);
+    renderAdminHome();
+  } catch (e) {
+    showToast('刪除失敗：' + (e.code || e.message));
+  }
 }
 
 function copyRoomLink(code) {
