@@ -206,6 +206,10 @@ textarea{resize:none;line-height:1.5;min-height:60px;}
 .tab-dot.show{display:none!important;}
 
 /* DRAWER */
+.admin-row{display:flex;align-items:center;gap:12px;width:100%;padding:14px 16px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);cursor:pointer;font-size:14px;color:var(--text-muted);text-align:left;}
+.admin-code{font-weight:700;letter-spacing:.12em;color:var(--text);font-size:16px;}
+.admin-arrow{margin-left:auto;font-size:18px;opacity:.6;}
+.admin-dot{width:12px;height:12px;border-radius:50%;flex-shrink:0;}
 .rules-panel{width:100%;max-width:560px;max-height:82vh;display:flex;flex-direction:column;background:linear-gradient(180deg,#FAF8F2 0%,#FDFCF9 40%);border-radius:14px 14px 0 0;padding-bottom:env(safe-area-inset-bottom,0px);}
 .rules-head{display:flex;align-items:center;justify-content:space-between;padding:16px 20px 10px;font-size:16px;font-weight:600;color:var(--text);}
 .rules-close{width:30px;height:30px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-muted);font-size:18px;cursor:pointer;line-height:1;}
@@ -817,7 +821,8 @@ function updateDots() {
 function renderPlayerTabs() {
   const bar = document.getElementById('playerTabsBar');
   if (!bar) return;
-  bar.innerHTML = players.map(p => {
+  const shown = (typeof ONLINE !== 'undefined' && ONLINE && ONLINE.mode === 'player') ? players.filter(p => p.id === ONLINE.pid) : players;
+  bar.innerHTML = shown.map(p => {
     const hasRolls = PHASES.some(ph => p.phases[ph].length > 0);
     const isActive = p.id === currentPlayerId;
     const name = p.name || '玩家'+(p.id+1);
@@ -2143,7 +2148,7 @@ function renderDrawer() {
   const player = getPlayer();
   const playerSelect = `<div class="field-group"><div class="field-label">查看玩家</div>
     <select onchange="switchPlayerDrawer(parseInt(this.value))">
-      ${players.map(p=>`<option value="${p.id}" ${p.id===currentPlayerId?'selected':''}>${p.name||'玩家'+(p.id+1)}</option>`).join('')}
+      ${((typeof ONLINE !== 'undefined' && ONLINE && ONLINE.mode === 'player') ? players.filter(p => p.id === ONLINE.pid) : players).map(p=>`<option value="${p.id}" ${p.id===currentPlayerId?'selected':''}>${p.name||'玩家'+(p.id+1)}</option>`).join('')}
     </select></div>`;
 
   const summaryHTML = PHASES.map(ph => {
@@ -2594,6 +2599,7 @@ const LS_KEY = 'sofasogood_sessions';
 const LS_CURRENT = 'sofasogood_current';
 
 function saveCurrentSession() {
+  if (typeof ONLINE !== 'undefined' && ONLINE) return; // 連線版存在雲端
   try {
     const data = {
       date: window._sessionDate || new Date().toISOString().slice(0,10),
@@ -2619,6 +2625,7 @@ function loadCurrentSession() {
 }
 
 function archiveCurrentSession() {
+  if (typeof ONLINE !== 'undefined' && ONLINE) return;
   try {
     const raw = localStorage.getItem(LS_CURRENT);
     if (!raw) return;
@@ -2709,8 +2716,11 @@ function loadSession(id) {
 }
 
 // ── INIT ──
-// 自動載入上次紀錄
-if (loadCurrentSession() && players.length > 0 && players.some(p => PHASES.some(ph => p.phases[ph].length > 0))) {
+// 網址有 ?room= 或 ?admin 時走連線版，否則照舊用單機版
+if (onlineParams()) {
+  // 連線版：等整段程式載入完再啟動
+  setTimeout(startOnlineIfNeeded, 0);
+} else if (loadCurrentSession() && players.length > 0 && players.some(p => PHASES.some(ph => p.phases[ph].length > 0))) {
   gameStarted = true;
   renderPlayerTabs();
   renderPhaseContent();
@@ -2779,214 +2789,264 @@ async function exportImage() {
   const player = getPlayer(); if (!player) return;
   showToast('圖片產生中…');
   const FONT = '"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif';
-  const W = 1080, PAD = 64, CW = 150, CH = 225, GAP = 20;
-  const COLS = Math.floor((W - PAD * 2 + GAP) / (CW + GAP));
+  const W = 1080, PAD = 64, CW = 150, GAP = 20;
   const PH_COLOR = { body:'#A03020', mind:'#2050A0', spirit:'#6040A8' };
   const TYPE_BG = { tarot:['#e8d4b0','#c09050'], 'tarot-minor':['#e8d4b0','#c09050'], issue:['#b8cce8','#6090c8'], guide:['#c8b8e0','#9870c8'], golden:['#f0dea0','#c8a030'] };
   const pName = player.name || '玩家' + (player.id + 1);
   const pColor = player.color || PLAYER_COLORS[player.id] || '#7C5C38';
+  const date = window._sessionDate || new Date().toISOString().slice(0,10);
 
-  // 收集每關的手牌（依步驟順序）
-  const sections = PHASES.map(ph => {
-    const rolls = player.phases[ph];
-    const items = handItemsInOrder(rolls.filter(r => r.collapsed));
-    return { ph, items, status: calcPassStatus(player, ph) };
-  }).filter(s => s.items.length);
+  // ── 資料 ──
+  const sections = PHASES.map(ph => ({ ph, items: handItemsInOrder(player.phases[ph].filter(r => r.collapsed)), status: calcPassStatus(player, ph) }));
+  const bp = player.blueprint || {};
+  const bpCards = PHASES.map(ph => {
+    const b = bp[ph] || {};
+    return { ph, cards: [
+      { label:'塔羅', name:b.tarotId, ori:b.tarotOrientation || '', type:'tarot' },
+      { label:'議題', name:b.issueId, ori:'', type:'issue' },
+      { label:'指引', name:b.guideId, ori:'', type:'guide' },
+    ] };
+  }).filter(r => r.cards.some(c => c.name));
 
-  // 預先載入牌卡圖片
-  const imgMap = new Map();
-  await Promise.all(sections.flatMap(s => s.items.filter(it => it.kind === 'info').map(async it => {
-    const url = getCardImg(it.roll.cardName, it.roll.orientation, infoTypeOf(it.roll));
-    imgMap.set(it.roll.id, await loadCardImage(url));
-  })));
-
+  // ── 載入圖片 ──
+  const imgMap = new Map();   // key → Image|null
+  const jobs = [];
+  sections.forEach(s => s.items.filter(it => it.kind === 'info').forEach(it => {
+    const key = 'r' + it.roll.id;
+    jobs.push(loadCardImage(getCardImg(it.roll.cardName, it.roll.orientation, infoTypeOf(it.roll))).then(v => imgMap.set(key, v)));
+  }));
+  bpCards.forEach(row => row.cards.filter(c => c.name).forEach(c => {
+    const key = `bp-${row.ph}-${c.type}`;
+    jobs.push(loadCardImage(getCardImg(c.name, c.ori, c.type)).then(v => imgMap.set(key, v)));
+  }));
+  await Promise.all(jobs);
   const imgTotal = imgMap.size;
   const imgFailed = [...imgMap.values()].filter(v => !v).length;
 
-  const bp = player.blueprint || {};
-  const bpRows = PHASES.map(ph => {
-    const b = bp[ph] || {};
-    const parts = [];
-    if (b.tarotId) parts.push('塔羅 ' + b.tarotId + (b.tarotOrientation ? ' ' + b.tarotOrientation : ''));
-    if (b.issueId) parts.push('議題 ' + b.issueId);
-    if (b.guideId) parts.push('指引 ' + b.guideId);
-    return parts.length ? { ph, text: parts.join('　') } : null;
-  }).filter(Boolean);
-
-  // 畫兩次：第一次量高度，第二次真的畫
-  const render = (ctx, draw) => {
+  // ── 共用繪圖 ──
+  const mkText = (ctx, draw) => (t, x, y, size, color, weight = 400, align = 'left', style = '') => {
+    ctx.font = `${style} ${weight} ${size}px ${FONT}`; ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = 'top';
+    if (draw) ctx.fillText(t, x, y);
+  };
+  // 頁首：品牌、日期、玩家、議題；compact 版給各關頁
+  const header = (ctx, draw, compact) => {
+    const text = mkText(ctx, draw);
     let y = PAD;
-    const text = (t, x, yy, size, color, weight = 400, align = 'left', style = '') => {
-      ctx.font = `${style} ${weight} ${size}px ${FONT}`; ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = 'top';
-      if (draw) ctx.fillText(t, x, yy);
-    };
-    text('SofaSogood ✦ 答案', PAD, y, 26, '#8C6E4E', 400); 
-    text(window._sessionDate || new Date().toISOString().slice(0,10), W - PAD, y + 2, 22, '#A8998A', 400, 'right');
+    text('SofaSogood ✦ 答案', PAD, y, 26, '#8C6E4E');
+    text(date, W - PAD, y + 2, 22, '#A8998A', 400, 'right');
     y += 56;
-    text(pName, PAD, y, 52, pColor, 700); y += 72;
+    text(pName, PAD, y, compact ? 36 : 52, pColor, 700); y += compact ? 52 : 72;
     if (player.topic) {
-      ctx.font = `italic 400 30px ${FONT}`;
-      wrapText(ctx, '「' + player.topic + '」', W - PAD * 2).forEach(l => { text(l, PAD, y, 30, '#5C4A38', 400, 'left', 'italic'); y += 44; });
+      const size = compact ? 24 : 30;
+      ctx.font = `italic 400 ${size}px ${FONT}`;
+      wrapText(ctx, '「' + player.topic + '」', W - PAD * 2).forEach(l => { text(l, PAD, y, size, '#5C4A38', 400, 'left', 'italic'); y += size + 14; });
     }
-    y += 20;
+    y += 16;
     if (draw) { ctx.fillStyle = '#E6DCCB'; ctx.fillRect(PAD, y, W - PAD * 2, 2); }
-    y += 36;
-
-    sections.forEach(sec => {
-      const st = sec.status;
-      text(PHASE_NAMES[sec.ph] + ' 關', PAD, y, 36, PH_COLOR[sec.ph], 700);
-      const rc = releaseCounts(player.phases[sec.ph]);
-      const meta = `${st.infoCount} 張訊息卡${player.phaseDone[sec.ph] ? ' · 已過關 ✓' : ''}${rc.cards ? ` · 放下 ${rc.cards} 次` : ''}`;
-      text(meta, PAD + 110, y + 10, 24, '#8C7B6A', 400);
-      y += 64;
-      // 排版：依順序由左到右排，放不下就換行；牌面保持原本比例，指引卡放大
-      const GW = CW * 2 + GAP;        // 指引卡寬度
-      const MAXW = W - PAD * 2;
-      const LABEL_H = 88;
-      const boxes = sec.items.map(it => {
-        const img = it.kind === 'info' ? imgMap.get(it.roll.id) : null;
-        const w = it.kind === 'info' && infoTypeOf(it.roll) === 'guide' ? GW : CW;
-        const h = img && img.naturalWidth ? Math.round(w * img.naturalHeight / img.naturalWidth) : Math.round(w * 1.5);
-        return { it, img, w, h };
-      });
-      const rowsOut = []; let cur = [], curW = 0;
-      boxes.forEach(bx => {
-        const need = (cur.length ? GAP : 0) + bx.w;
-        if (cur.length && curW + need > MAXW) { rowsOut.push(cur); cur = []; curW = 0; }
-        curW += (cur.length ? GAP : 0) + bx.w; cur.push(bx);
-      });
-      if (cur.length) rowsOut.push(cur);
-
-      rowsOut.forEach(row => {
-        const rowH = Math.max(...row.map(bx => bx.h));
-        let x = PAD;
-        row.forEach(bx => {
-          const { it, img, w: bw, h: bh } = bx;
-          const cy = y;
-          if (draw) {
-            ctx.save();
-            const faded = (it.kind === 'info' && it.gone) || (it.kind === 'release' && it.used);
-            if (faded) ctx.globalAlpha = 0.38;
-            roundRectPath(ctx, x, cy, bw, bh, 10); ctx.save(); ctx.clip();
-            if (it.kind === 'info') {
-              if (img) {
-                ctx.drawImage(img, x, cy, bw, bh);
-                if (it.gone) { ctx.globalCompositeOperation = 'saturation'; ctx.fillStyle = '#888'; ctx.fillRect(x, cy, bw, bh); }
-              } else {
-                const [c1, c2] = TYPE_BG[infoTypeOf(it.roll)] || TYPE_BG.tarot;
-                const g = ctx.createLinearGradient(x, cy, x + bw, cy + bh); g.addColorStop(0, it.gone ? '#ddd' : c1); g.addColorStop(1, it.gone ? '#aaa' : c2);
-                ctx.fillStyle = g; ctx.fillRect(x, cy, bw, bh);
-                ctx.font = `600 26px ${FONT}`; ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-                wrapText(ctx, it.roll.cardName, bw - 24).slice(0, 4).forEach((l, k, arr) => ctx.fillText(l, x + bw / 2, cy + bh / 2 + (k - (arr.length - 1) / 2) * 34));
-              }
-            } else if (it.kind === 'noble') {
-              const g = ctx.createLinearGradient(x, cy, x + bw * 0.6, cy + bh);
-              g.addColorStop(0, '#FFFFFF'); g.addColorStop(0.55, '#F4F0E9'); g.addColorStop(1, '#DDD5C8');
-              ctx.fillStyle = g; ctx.fillRect(x, cy, bw, bh);
-              ctx.font = `700 38px ${FONT}`; ctx.fillStyle = '#3C2E22'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('貴', x + bw / 2, cy + bh / 2 - 24); ctx.fillText('人', x + bw / 2, cy + bh / 2 + 24);
-            } else {
-              const g = ctx.createLinearGradient(x, cy, x + bw * 0.6, cy + bh);
-              if (it.used) { g.addColorStop(0, '#C4BEB6'); g.addColorStop(0.55, '#A39D95'); g.addColorStop(1, '#86807A'); }
-              else { g.addColorStop(0, '#5A4A3C'); g.addColorStop(0.55, '#2C2218'); g.addColorStop(1, '#0E0B08'); }
-              ctx.fillStyle = g; ctx.fillRect(x, cy, bw, bh);
-              ctx.font = `700 38px ${FONT}`; ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('放', x + bw / 2, cy + bh / 2 - 24); ctx.fillText('下', x + bw / 2, cy + bh / 2 + 24);
-            }
-            ctx.restore();
-            roundRectPath(ctx, x, cy, bw, bh, 10); ctx.strokeStyle = '#E0D6C6'; ctx.lineWidth = 2; ctx.stroke();
-            const label = it.kind === 'info' ? it.roll.cardName + (it.roll.orientation ? ' ' + it.roll.orientation : '') + (it.gone ? '（已放下）' : '')
-              : it.kind === 'noble' ? '貴人' : (it.used ? '放下（已執行）' : '放下');
-            ctx.font = `400 22px ${FONT}`; ctx.fillStyle = '#5C4A38'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-            wrapText(ctx, label, bw + 10).slice(0, 2).forEach((l, k) => ctx.fillText(l, x + bw / 2, cy + bh + 10 + k * 28));
-            ctx.restore();
-          }
-          x += bw + GAP;
-        });
-        y += rowH + LABEL_H;
-      });
-      y += 24;
-    });
-
-    if (bpRows.length) {
-      text('✦ 答案藍圖', PAD, y, 36, '#8C6E4E', 700); y += 62;
-      bpRows.forEach(r => {
-        text(PHASE_NAMES[r.ph], PAD, y, 28, PH_COLOR[r.ph], 700);
-        ctx.font = `400 28px ${FONT}`;
-        wrapText(ctx, r.text, W - PAD * 2 - 60).forEach(l => { text(l, PAD + 60, y, 28, '#3C2E22', 400); y += 42; });
-        y += 8;
-      });
-      y += 24;
+    return y + 36;
+  };
+  // 畫一張牌（圖片保持原比例；沒有圖就畫色塊）
+  const drawCard = (ctx, x, y, w, h, opt) => {
+    const { img, kind, type, name, faded, used } = opt;
+    ctx.save();
+    if (faded) ctx.globalAlpha = 0.38;
+    roundRectPath(ctx, x, y, w, h, 10); ctx.save(); ctx.clip();
+    if (kind === 'info') {
+      if (img) {
+        ctx.drawImage(img, x, y, w, h);
+        if (faded) { ctx.globalCompositeOperation = 'saturation'; ctx.fillStyle = '#888'; ctx.fillRect(x, y, w, h); }
+      } else {
+        const [c1, c2] = TYPE_BG[type] || TYPE_BG.tarot;
+        const g = ctx.createLinearGradient(x, y, x + w, y + h); g.addColorStop(0, faded ? '#ddd' : c1); g.addColorStop(1, faded ? '#aaa' : c2);
+        ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
+        ctx.font = `600 26px ${FONT}`; ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        wrapText(ctx, name || '', w - 24).slice(0, 4).forEach((l, k, arr) => ctx.fillText(l, x + w / 2, y + h / 2 + (k - (arr.length - 1) / 2) * 34));
+      }
+    } else {
+      const g = ctx.createLinearGradient(x, y, x + w * 0.6, y + h);
+      if (kind === 'noble') { g.addColorStop(0, '#FFFFFF'); g.addColorStop(0.55, '#F4F0E9'); g.addColorStop(1, '#DDD5C8'); }
+      else if (used) { g.addColorStop(0, '#C4BEB6'); g.addColorStop(0.55, '#A39D95'); g.addColorStop(1, '#86807A'); }
+      else { g.addColorStop(0, '#5A4A3C'); g.addColorStop(0.55, '#2C2218'); g.addColorStop(1, '#0E0B08'); }
+      ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
+      const word = kind === 'noble' ? '貴人' : '放下';
+      ctx.font = `700 38px ${FONT}`; ctx.fillStyle = kind === 'noble' ? '#3C2E22' : '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(word[0], x + w / 2, y + h / 2 - 24); ctx.fillText(word[1], x + w / 2, y + h / 2 + 24);
     }
+    ctx.restore();
+    roundRectPath(ctx, x, y, w, h, 10); ctx.strokeStyle = kind === 'noble' ? '#D8CFC2' : '#E0D6C6'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.restore();
+  };
+  const heightFor = (img, w) => img && img.naturalWidth ? Math.round(w * img.naturalHeight / img.naturalWidth) : Math.round(w * 1.5);
+  const labelUnder = (ctx, label, x, y, w) => {
+    ctx.font = `400 22px ${FONT}`; ctx.fillStyle = '#5C4A38'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    wrapText(ctx, label, w + 10).slice(0, 2).forEach((l, k) => ctx.fillText(l, x + w / 2, y + k * 28));
+  };
+
+  // ── 第 1 頁：身心靈藍圖 ──
+  const renderBlueprintPage = (ctx, draw) => {
+    const text = mkText(ctx, draw);
+    let y = header(ctx, draw, false);
+    text('✦ 答案藍圖', PAD, y, 38, '#8C6E4E', 700); y += 70;
+    if (!bpCards.length) {
+      text('尚未製作答案藍圖', PAD, y, 28, '#A8998A'); y += 60;
+    }
+    const LABEL_W = 70, CGAP = 22;
+    const cardW = Math.floor((W - PAD * 2 - LABEL_W - CGAP * 2) / 3);
+    bpCards.forEach(row => {
+      const boxes = row.cards.map(c => {
+        const img = c.name ? imgMap.get(`bp-${row.ph}-${c.type}`) : null;
+        return { c, img, h: heightFor(img, cardW) };
+      });
+      const rowH = Math.max(...boxes.map(b => b.h));
+      text(PHASE_NAMES[row.ph], PAD, y + 8, 40, PH_COLOR[row.ph], 700);
+      boxes.forEach((b, k) => {
+        const x = PAD + LABEL_W + k * (cardW + CGAP);
+        if (!draw) return;
+        if (b.c.name) {
+          drawCard(ctx, x, y, cardW, b.h, { img: b.img, kind: 'info', type: b.c.type, name: b.c.name });
+          labelUnder(ctx, b.c.name + (b.c.ori ? ' ' + b.c.ori : ''), x, y + b.h + 10, cardW);
+        } else {
+          ctx.save(); ctx.setLineDash([8, 8]); roundRectPath(ctx, x, y, cardW, Math.round(cardW * 1.5), 10);
+          ctx.strokeStyle = '#D8CFC2'; ctx.lineWidth = 2; ctx.stroke(); ctx.restore();
+          labelUnder(ctx, b.c.label + '（未選）', x, y + Math.round(cardW * 1.5) + 10, cardW);
+        }
+      });
+      y += rowH + 80;
+    });
     [['核心啟發', player.insight], ['如何實踐', player.action]].forEach(([k, v]) => {
       if (!v) return;
-      text(k, PAD, y, 28, '#8C6E4E', 700); y += 46;
+      text(k, PAD, y, 30, '#8C6E4E', 700); y += 48;
       ctx.font = `400 28px ${FONT}`;
-      wrapText(ctx, v, W - PAD * 2).forEach(l => { text(l, PAD, y, 28, '#3C2E22', 400); y += 42; });
+      wrapText(ctx, v, W - PAD * 2).forEach(l => { text(l, PAD, y, 28, '#3C2E22'); y += 42; });
       y += 24;
     });
     return y + PAD - 20;
   };
 
-  const measure = document.createElement('canvas').getContext('2d');
-  const H = Math.ceil(render(measure, false));
-  const canvas = document.createElement('canvas');
-  canvas.width = W; canvas.height = H;
-  const ctx = canvas.getContext('2d');
-  const bg = ctx.createLinearGradient(0, 0, 0, H); bg.addColorStop(0, '#FDFCF9'); bg.addColorStop(1, '#F5EFE4');
-  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
-  render(ctx, true);
+  // ── 第 2–4 頁：各關的牌 ──
+  const renderPhasePage = sec => (ctx, draw) => {
+    const text = mkText(ctx, draw);
+    let y = header(ctx, draw, true);
+    const st = sec.status;
+    const rc = releaseCounts(player.phases[sec.ph]);
+    text(PHASE_NAMES[sec.ph] + ' 關', PAD, y, 44, PH_COLOR[sec.ph], 700);
+    const meta = `${st.infoCount} 張訊息卡${player.phaseDone[sec.ph] ? ' · 已過關 ✓' : ''}${rc.cards ? ` · 放下 ${rc.cards} 次` : ''}`;
+    text(meta, PAD + 140, y + 14, 24, '#8C7B6A');
+    y += 80;
+    if (!sec.items.length) { text('這關還沒有紀錄', PAD, y, 28, '#A8998A'); return y + 60 + PAD; }
+    // 依順序由左到右排，放不下就換行；指引卡放大
+    const GW = CW * 2 + GAP, MAXW = W - PAD * 2, LABEL_H = 88;
+    const boxes = sec.items.map(it => {
+      const img = it.kind === 'info' ? imgMap.get('r' + it.roll.id) : null;
+      const w = it.kind === 'info' && infoTypeOf(it.roll) === 'guide' ? GW : CW;
+      return { it, img, w, h: heightFor(img, w) };
+    });
+    const rows = []; let cur = [], curW = 0;
+    boxes.forEach(bx => {
+      const need = (cur.length ? GAP : 0) + bx.w;
+      if (cur.length && curW + need > MAXW) { rows.push(cur); cur = []; curW = 0; }
+      curW += (cur.length ? GAP : 0) + bx.w; cur.push(bx);
+    });
+    if (cur.length) rows.push(cur);
+    rows.forEach(row => {
+      const rowH = Math.max(...row.map(b => b.h));
+      let x = PAD;
+      row.forEach(({ it, img, w, h }) => {
+        if (draw) {
+          const faded = (it.kind === 'info' && it.gone) || (it.kind === 'release' && it.used);
+          drawCard(ctx, x, y, w, h, { img, kind: it.kind, type: it.kind === 'info' ? infoTypeOf(it.roll) : '', name: it.roll && it.roll.cardName, faded, used: it.used });
+          const label = it.kind === 'info' ? it.roll.cardName + (it.roll.orientation ? ' ' + it.roll.orientation : '') + (it.gone ? '（已放下）' : '')
+            : it.kind === 'noble' ? '貴人' : (it.used ? '放下（已執行）' : '放下');
+          labelUnder(ctx, label, x, y + h + 10, w);
+        }
+        x += w + GAP;
+      });
+      y += rowH + LABEL_H;
+    });
+    return y + PAD - 40;
+  };
 
-  let dataUrl;
-  try { dataUrl = canvas.toDataURL('image/png'); }
+  const makePage = render => {
+    const H = Math.ceil(render(document.createElement('canvas').getContext('2d'), false));
+    const canvas = document.createElement('canvas');
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    const bg = ctx.createLinearGradient(0, 0, 0, H); bg.addColorStop(0, '#FDFCF9'); bg.addColorStop(1, '#F5EFE4');
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+    render(ctx, true);
+    return canvas;
+  };
+
+  const safe = s => s.replace(/[\\/:*?"<>|\s]/g, '');
+  const pages = [{ title: '身心靈藍圖', canvas: makePage(renderBlueprintPage), file: safe(`答案_${pName}_${date}_1藍圖.png`) }];
+  sections.forEach((sec, i) => pages.push({ title: PHASE_NAMES[sec.ph] + '關的牌', canvas: makePage(renderPhasePage(sec)), file: safe(`答案_${pName}_${date}_${i + 2}${PHASE_NAMES[sec.ph]}關.png`) }));
+
+  try { pages.forEach(p => { p.url = p.canvas.toDataURL('image/png'); }); }
   catch (e) { showToast('圖片產生失敗'); return; }
-  const fileName = `答案_${pName}_${window._sessionDate || ''}.png`.replace(/[\\/:*?"<>|\s]/g, '');
-  showImagePreview(dataUrl, fileName, canvas, imgTotal && imgFailed ? `有 ${imgFailed}/${imgTotal} 張牌面圖片讀不到，已改用色塊顯示` : '');
+  showImagePreview(pages, imgTotal && imgFailed ? `有 ${imgFailed}/${imgTotal} 張牌面圖片讀不到，已改用色塊顯示` : '');
 }
 
-function showImagePreview(dataUrl, fileName, canvas, warn) {
+// 預覽：左右滑動切換，點圖放大
+function showImagePreview(pages, warn) {
   const old = document.getElementById('imgExport'); if (old) old.remove();
   const m = document.createElement('div');
   m.id = 'imgExport';
-  m.style.cssText = 'position:fixed;inset:0;z-index:10002;background:rgba(44,34,24,0.92);backdrop-filter:blur(6px);display:flex;flex-direction:column;align-items:center;padding:calc(env(safe-area-inset-top,0px) + 14px) 14px calc(env(safe-area-inset-bottom,0px) + 14px);gap:10px;';
+  m.style.cssText = 'position:fixed;inset:0;z-index:10002;background:rgba(44,34,24,0.92);backdrop-filter:blur(6px);display:flex;flex-direction:column;align-items:center;padding:calc(env(safe-area-inset-top,0px) + 14px) 0 calc(env(safe-area-inset-bottom,0px) + 14px);gap:10px;';
   const canShare = !!(navigator.canShare && window.File);
   m.innerHTML = `
-    <div style="display:flex;width:100%;max-width:560px;align-items:center;justify-content:space-between;color:#E8DCC8;font-size:13px;">
-      <span>圖片預覽</span>
+    <div style="display:flex;width:100%;max-width:560px;padding:0 14px;box-sizing:border-box;align-items:center;justify-content:space-between;color:#E8DCC8;font-size:13px;">
+      <span id="imgPageLabel">1/${pages.length}　${pages[0].title}</span>
       <button id="imgZoomBtn" style="padding:6px 12px;border:1px solid rgba(255,255,255,.3);border-radius:14px;background:transparent;color:#fff;font-size:12px;cursor:pointer;">放大檢視</button>
     </div>
-    <div id="imgScroll" style="flex:1;min-height:0;width:100%;overflow:auto;-webkit-overflow-scrolling:touch;text-align:center;">
-      <img id="imgExportPic" src="${dataUrl}" alt="${fileName}" style="width:100%;max-width:560px;height:auto;border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.35);">
+    <div id="imgTrack" style="flex:1;min-height:0;width:100%;display:flex;overflow-x:auto;overflow-y:hidden;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;scrollbar-width:none;">
+      ${pages.map((p, i) => `<div class="img-slide" style="flex:0 0 100%;scroll-snap-align:center;overflow:auto;-webkit-overflow-scrolling:touch;text-align:center;padding:0 14px;box-sizing:border-box;">
+        <img data-i="${i}" src="${p.url}" alt="${p.title}" style="width:100%;max-width:532px;height:auto;border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.35);">
+      </div>`).join('')}
     </div>
-    ${warn ? `<div style="font-size:12px;color:#F2B8A8;">⚠️ ${warn}</div>` : ''}
-    <div style="font-size:12px;color:#E8DCC8;">點圖片可放大／縮小，長按可存到相簿</div>
-    <div style="display:flex;gap:8px;width:100%;max-width:560px;">
-      ${canShare ? `<button id="imgShareBtn" style="flex:1;padding:13px;border:none;border-radius:8px;background:linear-gradient(135deg,#A07850,#7C5C38);color:#fff;font-size:14px;cursor:pointer;">分享</button>` : ''}
+    <div id="imgDots" style="display:flex;gap:6px;">${pages.map((_, i) => `<span style="width:7px;height:7px;border-radius:50%;background:${i ? 'rgba(255,255,255,.3)' : '#fff'};"></span>`).join('')}</div>
+    ${warn ? `<div style="font-size:12px;color:#F2B8A8;padding:0 14px;">⚠️ ${warn}</div>` : ''}
+    <div style="font-size:12px;color:#E8DCC8;">左右滑動換頁，點圖片可放大，長按可存到相簿</div>
+    <div style="display:flex;gap:8px;width:100%;max-width:560px;padding:0 14px;box-sizing:border-box;">
+      ${canShare ? `<button id="imgShareBtn" style="flex:1;padding:13px;border:none;border-radius:8px;background:linear-gradient(135deg,#A07850,#7C5C38);color:#fff;font-size:14px;cursor:pointer;">分享全部 ${pages.length} 張</button>` : ''}
       <button onclick="document.getElementById('imgExport').remove()" style="flex:1;padding:13px;border:1px solid rgba(255,255,255,.3);border-radius:8px;background:transparent;color:#fff;font-size:14px;cursor:pointer;">關閉</button>
     </div>`;
   document.body.appendChild(m);
 
-  // 點圖片 / 放大鈕：在「符合寬度」和「原尺寸」之間切換
-  const pic = document.getElementById('imgExportPic');
+  const track = document.getElementById('imgTrack');
+  const label = document.getElementById('imgPageLabel');
+  const dots = [...document.getElementById('imgDots').children];
   const zoomBtn = document.getElementById('imgZoomBtn');
-  let zoomed = false;
-  const toggleZoom = () => {
-    zoomed = !zoomed;
-    pic.style.width = zoomed ? canvas.width + 'px' : '100%';
-    pic.style.maxWidth = zoomed ? 'none' : '560px';
-    zoomBtn.textContent = zoomed ? '縮小' : '放大檢視';
+  let cur = 0, zoomed = false;
+  const setZoom = on => {
+    zoomed = on;
+    m.querySelectorAll('.img-slide img').forEach((img, i) => {
+      const z = on && i === cur;
+      img.style.width = z ? pages[i].canvas.width + 'px' : '100%';
+      img.style.maxWidth = z ? 'none' : '532px';
+    });
+    zoomBtn.textContent = on ? '縮小' : '放大檢視';
   };
-  pic.onclick = toggleZoom;
-  zoomBtn.onclick = toggleZoom;
+  track.addEventListener('scroll', () => {
+    const i = Math.round(track.scrollLeft / track.clientWidth);
+    if (i !== cur && pages[i]) {
+      cur = i;
+      label.textContent = `${i + 1}/${pages.length}　${pages[i].title}`;
+      dots.forEach((d, k) => d.style.background = k === i ? '#fff' : 'rgba(255,255,255,.3)');
+      if (zoomed) setZoom(false);
+    }
+  }, { passive: true });
+  m.querySelectorAll('.img-slide img').forEach(img => img.onclick = () => setZoom(!zoomed));
+  zoomBtn.onclick = () => setZoom(!zoomed);
 
   const shareBtn = document.getElementById('imgShareBtn');
-  if (shareBtn) shareBtn.onclick = () => {
-    canvas.toBlob(async blob => {
-      const file = new File([blob], fileName, { type: 'image/png' });
-      if (navigator.canShare({ files: [file] })) {
-        try { await navigator.share({ files: [file], title: fileName }); } catch (e) {}
-      } else {
-        showToast('這個瀏覽器不支援分享，請長按圖片儲存');
-      }
-    }, 'image/png');
+  if (shareBtn) shareBtn.onclick = async () => {
+    const blobs = await Promise.all(pages.map(p => new Promise(res => p.canvas.toBlob(res, 'image/png'))));
+    const files = blobs.map((b, i) => new File([b], pages[i].file, { type: 'image/png' }));
+    if (navigator.canShare({ files })) {
+      try { await navigator.share({ files }); } catch (e) {}
+    } else {
+      showToast('這個瀏覽器不支援分享，請長按圖片儲存');
+    }
   };
 }
 
@@ -3036,8 +3096,349 @@ function showRules() {
   </div>`;
   document.body.appendChild(m);
 }
+
+// ══════════════════════════════════════════════
+// 多人連線版（Firebase）
+//   玩家：網址加 ?room=場次代碼，用自己的手機操作自己的紀錄
+//   管理員：網址加 ?admin，用 Google 登入，看所有場次與玩家
+// ══════════════════════════════════════════════
+var FIREBASE_CONFIG = {
+  apiKey: "AIzaSyAZdjpDIfvajPy0sXakcWeNIkkhgq7fmgI",
+  authDomain: "sofasogood-be4e0.firebaseapp.com",
+  projectId: "sofasogood-be4e0",
+  storageBucket: "sofasogood-be4e0.firebasestorage.app",
+  messagingSenderId: "99603855539",
+  appId: "1:99603855539:web:ec88a924526aa5547818c6"
+};
+var ADMIN_EMAIL = 'sofasogood.soul@gmail.com';
+var FB_VER = '10.12.2';
+var ONLINE = null;   // { mode:'player'|'admin', room, uid, db, auth, viewing }
+var _fb = null;
+var _lastPushed = '';
+var _unsubPlayers = null;
+
+function onlineParams() {
+  const q = new URLSearchParams(location.search);
+  if (q.has('admin')) return { mode: 'admin' };
+  const room = (q.get('room') || '').trim().toUpperCase();
+  if (room) return { mode: 'player', room };
+  return null;
+}
+
+function loadScript(src) {
+  return new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = src; s.onload = res; s.onerror = () => rej(new Error('無法載入 ' + src));
+    document.head.appendChild(s);
+  });
+}
+
+async function initFirebase() {
+  if (_fb) return _fb;
+  const base = `https://www.gstatic.com/firebasejs/${FB_VER}/`;
+  await loadScript(base + 'firebase-app-compat.js');
+  await loadScript(base + 'firebase-auth-compat.js');
+  await loadScript(base + 'firebase-firestore-compat.js');
+  firebase.initializeApp(FIREBASE_CONFIG);
+  const db = firebase.firestore();
+  try { await db.enablePersistence({ synchronizeTabs: true }); } catch (e) {}
+  _fb = { db, auth: firebase.auth() };
+  return _fb;
+}
+
+function onlineScreen(html) {
+  hideFab();
+  const ptb = document.getElementById('playerTabsBar'); if (ptb) ptb.innerHTML = '';
+  document.getElementById('headerStatus').innerHTML = '';
+  document.getElementById('mainContent').innerHTML = `<div class="setup-screen">${html}</div>`;
+}
+
+function waitAuth(auth) {
+  return new Promise(res => { const off = auth.onAuthStateChanged(u => { off(); res(u); }); });
+}
+
+// 存到雲端的玩家資料（照片不上傳，避免超過容量）
+function playerForCloud(p) {
+  const clone = JSON.parse(JSON.stringify(p));
+  PHASES.forEach(ph => (clone.phases[ph] || []).forEach(r => { delete r.photo; (r.extras || []).forEach(e => delete e.photo); }));
+  return clone;
+}
+
+function progressText(p) {
+  return PHASES.map(ph => {
+    const steps = (p.phases[ph] || []).filter(r => !r.fromCarry && (r.cellType || r.cardName));
+    if (p.phaseDone[ph]) return `${PHASE_NAMES[ph]}✓`;
+    if (!steps.length) return '';
+    return `${PHASE_NAMES[ph]}關第 ${steps.filter(r => !r.isExtra).length} 輪`;
+  }).filter(Boolean).join('　') || '尚未開始';
+}
+
+function parsePlayerDoc(d) {
+  try { const p = JSON.parse(d.json); p.id = d.pid; return p; } catch (e) { return null; }
+}
+
+// 每 1.5 秒檢查一次，有變動才上傳
+function pushSelfIfChanged() {
+  if (!ONLINE || ONLINE.mode !== 'player' || !gameStarted) return;
+  const me = players.find(p => p.id === ONLINE.pid); if (!me) return;
+  const json = JSON.stringify(playerForCloud(me));
+  if (json === _lastPushed) return;
+  _lastPushed = json;
+  ONLINE.db.collection('rooms').doc(ONLINE.room).collection('players').doc(ONLINE.uid).set({
+    pid: ONLINE.pid, uid: ONLINE.uid, name: me.name || '', topic: me.topic || '', color: me.color || '',
+    progress: progressText(me), json,
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true }).catch(e => console.warn('sync failed', e));
+}
+
+function setHeaderButton(label, onclick) {
+  const btn = document.querySelector('#mainHeader .header-top button');
+  if (btn) { btn.textContent = label; btn.onclick = onclick; }
+}
+
+// ── 玩家端 ──
+async function startOnlinePlayer(room) {
+  onlineScreen('<div class="empty-state">連線中…</div>');
+  let fb;
+  try { fb = await initFirebase(); } catch (e) { onlineScreen(`<div class="empty-state">無法連線，請確認網路後重新整理</div>`); return; }
+  let user = await waitAuth(fb.auth);
+  if (!user) { try { user = (await fb.auth.signInAnonymously()).user; } catch (e) { onlineScreen('<div class="empty-state">登入失敗，請重新整理</div>'); return; } }
+  const roomRef = fb.db.collection('rooms').doc(room);
+  const roomSnap = await roomRef.get().catch(() => null);
+  if (!roomSnap || !roomSnap.exists) { onlineScreen(`<div class="setup-title">✦ 找不到場次 ${room}</div><div class="empty-state">請確認代碼是否正確，或向主持人重新取得連結</div>`); return; }
+  const roomData = roomSnap.data();
+  ONLINE = { mode: 'player', room, uid: user.uid, db: fb.db, auth: fb.auth, roomData };
+  window._sessionDate = roomData.date || window._sessionDate;
+  setHeaderButton(`場次 ${room}`, () => showToast(`場次代碼 ${room}`));
+
+  const meRef = roomRef.collection('players').doc(user.uid);
+  const meSnap = await meRef.get().catch(() => null);
+  if (meSnap && meSnap.exists && parsePlayerDoc(meSnap.data())) {
+    const me = parsePlayerDoc(meSnap.data());
+    ONLINE.pid = me.id;
+    beginOnlineGame(me);
+  } else {
+    renderJoinScreen();
+  }
+}
+
+function renderJoinScreen() {
+  const d = { name: '', zodiac: '', topic: '' };
+  window._joinDraft = d;
+  const zodiacBtns = Object.entries(ZODIAC_GROUPS).flatMap(([k, vs]) => vs.map(z =>
+    `<button class="join-z" data-z="${z}" onclick="pickJoinZodiac('${z}')" style="padding:6px 2px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text-muted);font-size:12px;cursor:pointer;">${z}</button>`)).join('');
+  onlineScreen(`
+    <div>
+      <div class="setup-title">✦ 加入場次 ${ONLINE.room}</div>
+      <div style="margin-top:6px;font-size:13px;color:var(--text-muted)">${ONLINE.roomData.date || ''}　用你自己的手機記錄這一局</div>
+    </div>
+    <div class="player-setup-card">
+      <div class="field-group"><div class="field-label">你的名字</div>
+        <input type="text" placeholder="例：小芳" oninput="_joinDraft.name=this.value"></div>
+      <div class="field-group"><div class="field-label">太陽星座（決定起點）</div>
+        <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:4px;">${zodiacBtns}</div></div>
+      <div class="field-group"><div class="field-label">今次帶入的議題</div>
+        <textarea rows="2" placeholder="例：這段感情未來發展？" oninput="_joinDraft.topic=this.value"></textarea></div>
+    </div>
+    <button class="start-btn" onclick="joinRoom()">加入並開始 →</button>`);
+}
+
+function pickJoinZodiac(z) {
+  _joinDraft.zodiac = _joinDraft.zodiac === z ? '' : z;
+  document.querySelectorAll('.join-z').forEach(b => {
+    const on = b.dataset.z === _joinDraft.zodiac;
+    b.style.background = on ? 'var(--text)' : 'transparent';
+    b.style.color = on ? '#fff' : 'var(--text-muted)';
+  });
+}
+
+async function joinRoom() {
+  const d = _joinDraft;
+  if (!d.name.trim()) { showToast('請輸入名字'); return; }
+  const col = ONLINE.db.collection('rooms').doc(ONLINE.room).collection('players');
+  let maxPid = -1;
+  try { (await col.get()).forEach(doc => { const v = doc.data().pid; if (typeof v === 'number') maxPid = Math.max(maxPid, v); }); } catch (e) {}
+  const pid = maxPid + 1;
+  const me = {
+    id: pid, name: d.name.trim(), zodiac: d.zodiac, topic: d.topic.trim(), color: PLAYER_COLORS[pid % PLAYER_COLORS.length],
+    phases: { body: [], mind: [], spirit: [] }, nobleCarry: { body: 0, mind: 0, spirit: 0 },
+    phaseDone: { body: false, mind: false, spirit: false }, insight: '', action: '',
+  };
+  ONLINE.pid = pid;
+  beginOnlineGame(me);
+  pushSelfIfChanged();
+}
+
+function beginOnlineGame(me) {
+  players = [me];
+  currentPlayerId = me.id;
+  // 每位玩家的輪次編號分開，避免不同手機的編號撞在一起
+  let maxId = me.id * 1000000;
+  PHASES.forEach(ph => me.phases[ph].forEach(r => { maxId = Math.max(maxId, r.id || 0); (r.extras||[]).forEach(e => maxId = Math.max(maxId, e.id || 0)); }));
+  nextId = maxId + 1;
+  _lastPushed = JSON.stringify(playerForCloud(me));
+  gameStarted = true;
+  applyPlayerSwitch(me.id);
+  renderPlayerTabs(); renderPhaseContent(); showFab(); updateHandBar();
+  // 同場其他玩家：只用來做「選過的牌不能再選」
+  if (_unsubPlayers) _unsubPlayers();
+  _unsubPlayers = ONLINE.db.collection('rooms').doc(ONLINE.room).collection('players').onSnapshot(snap => {
+    snap.forEach(doc => {
+      if (doc.id === ONLINE.uid) return;
+      const p = parsePlayerDoc(doc.data()); if (!p) return;
+      const i = players.findIndex(x => x.id === p.id);
+      if (i >= 0) players[i] = p; else players.push(p);
+    });
+  });
+}
+
+// ── 管理員端 ──
+async function startOnlineAdmin() {
+  onlineScreen('<div class="empty-state">連線中…</div>');
+  let fb;
+  try { fb = await initFirebase(); } catch (e) { onlineScreen('<div class="empty-state">無法連線，請確認網路後重新整理</div>'); return; }
+  try { await fb.auth.getRedirectResult(); } catch (e) {}
+  let user = await waitAuth(fb.auth);
+  ONLINE = { mode: 'admin', db: fb.db, auth: fb.auth };
+  if (!user || user.isAnonymous || (user.email || '').toLowerCase() !== ADMIN_EMAIL) {
+    onlineScreen(`
+      <div><div class="setup-title">✦ 管理員登入</div>
+      <div style="margin-top:6px;font-size:13px;color:var(--text-muted)">${user && !user.isAnonymous ? `目前登入的 ${user.email} 不是管理員帳號` : '請用管理員的 Google 帳號登入'}</div></div>
+      <button class="start-btn" onclick="adminSignIn()">用 Google 登入</button>
+      ${user && !user.isAnonymous ? `<button onclick="ONLINE.auth.signOut().then(()=>location.reload())" style="padding:12px;border:1px solid var(--border);border-radius:var(--radius);background:transparent;color:var(--text-muted);cursor:pointer;">登出</button>` : ''}`);
+    return;
+  }
+  ONLINE.uid = user.uid;
+  renderAdminHome();
+}
+
+async function adminSignIn() {
+  const provider = new firebase.auth.GoogleAuthProvider();
+  try { await ONLINE.auth.signInWithPopup(provider); location.reload(); }
+  catch (e) {
+    if (e && (e.code === 'auth/popup-blocked' || e.code === 'auth/operation-not-supported-in-this-environment')) ONLINE.auth.signInWithRedirect(provider);
+    else showToast('登入失敗：' + (e.code || e.message));
+  }
+}
+
+async function renderAdminHome() {
+  if (_unsubPlayers) { _unsubPlayers(); _unsubPlayers = null; }
+  gameStarted = false; ONLINE.viewing = null; ONLINE.room = null;
+  setHeaderButton('登出', () => ONLINE.auth.signOut().then(() => location.reload()));
+  const today = new Date().toISOString().slice(0, 10);
+  onlineScreen(`
+    <div><div class="setup-title">✦ 管理員</div>
+      <div style="margin-top:6px;font-size:13px;color:var(--text-muted)">${ADMIN_EMAIL}</div></div>
+    <div class="player-setup-card">
+      <div class="field-group"><div class="field-label">開新場次</div>
+        <input type="date" id="newRoomDate" value="${today}" style="font-size:15px;"></div>
+      <button class="start-btn" onclick="createRoom()">建立場次 →</button>
+    </div>
+    <div class="field-label">最近的場次</div>
+    <div id="roomList" style="display:flex;flex-direction:column;gap:8px;"><div class="empty-state">讀取中…</div></div>`);
+  try {
+    const snap = await ONLINE.db.collection('rooms').orderBy('createdAt', 'desc').limit(30).get();
+    const el = document.getElementById('roomList'); if (!el) return;
+    if (snap.empty) { el.innerHTML = '<div class="empty-state">還沒有場次</div>'; return; }
+    el.innerHTML = snap.docs.map(d => { const r = d.data(); return `
+      <button onclick="openAdminRoom('${d.id}')" class="admin-row">
+        <span class="admin-code">${d.id}</span><span>${r.date || ''}</span><span class="admin-arrow">›</span>
+      </button>`; }).join('');
+  } catch (e) {
+    const el = document.getElementById('roomList'); if (el) el.innerHTML = `<div class="empty-state">讀取失敗：${e.code || e.message}</div>`;
+  }
+}
+
+async function createRoom() {
+  const date = (document.getElementById('newRoomDate') || {}).value || new Date().toISOString().slice(0, 10);
+  const CH = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  for (let t = 0; t < 8; t++) {
+    const code = Array.from({ length: 4 }, () => CH[Math.floor(Math.random() * CH.length)]).join('');
+    const ref = ONLINE.db.collection('rooms').doc(code);
+    try {
+      const ex = await ref.get();
+      if (ex.exists) continue;
+      await ref.set({ code, date, createdAt: firebase.firestore.FieldValue.serverTimestamp(), createdBy: ADMIN_EMAIL });
+      openAdminRoom(code);
+      return;
+    } catch (e) { showToast('建立失敗：' + (e.code || e.message)); return; }
+  }
+  showToast('建立失敗，請再試一次');
+}
+
+function roomLink(code) { return location.origin + location.pathname + '?room=' + code; }
+
+async function openAdminRoom(code) {
+  if (_unsubPlayers) { _unsubPlayers(); _unsubPlayers = null; }
+  ONLINE.room = code; ONLINE.viewing = null; gameStarted = false;
+  setHeaderButton('← 場次列表', () => renderAdminHome());
+  const link = roomLink(code);
+  onlineScreen(`
+    <div><div class="setup-title">✦ 場次 ${code}</div></div>
+    <div class="player-setup-card" style="align-items:center;text-align:center;">
+      <div id="roomQR" style="background:#fff;padding:10px;border-radius:8px;"></div>
+      <div style="font-size:12px;color:var(--text-muted);word-break:break-all;">${link}</div>
+      <button class="start-btn" onclick="copyRoomLink('${code}')">複製加入連結</button>
+    </div>
+    <div class="field-label">玩家（即時更新）</div>
+    <div id="roomPlayers" style="display:flex;flex-direction:column;gap:8px;"><div class="empty-state">等待玩家加入…</div></div>`);
+  try {
+    if (!window.QRCode) await loadScript('https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js');
+    new QRCode(document.getElementById('roomQR'), { text: link, width: 180, height: 180 });
+  } catch (e) {}
+  _unsubPlayers = ONLINE.db.collection('rooms').doc(code).collection('players').onSnapshot(snap => {
+    const list = snap.docs.map(d => d.data()).sort((a, b) => a.pid - b.pid);
+    ONLINE.roomPlayers = list.map(parsePlayerDoc).filter(Boolean);
+    if (ONLINE.viewing != null) { refreshAdminView(); return; }
+    const el = document.getElementById('roomPlayers'); if (!el) return;
+    el.innerHTML = list.length ? list.map(d => `
+      <button onclick="adminViewPlayer(${d.pid})" class="admin-row">
+        <span class="admin-dot" style="background:${d.color || '#B8A898'}"></span>
+        <span style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:0;flex:1;">
+          <span style="font-weight:600;color:var(--text);">${d.name || '玩家' + (d.pid + 1)}</span>
+          <span style="font-size:12px;color:var(--text-muted);text-align:left;">${d.progress || ''}${d.topic ? '　·　' + d.topic : ''}</span>
+        </span><span class="admin-arrow">›</span>
+      </button>`).join('') : '<div class="empty-state">等待玩家加入…</div>';
+  });
+}
+
+function copyRoomLink(code) {
+  const link = roomLink(code);
+  const done = () => showToast('已複製加入連結');
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(link).then(done).catch(() => fallbackCopy(link, done));
+  else fallbackCopy(link, done);
+}
+
+// 管理員檢視玩家：用一般畫面顯示，上方分頁可切換玩家；檢視用，不會寫回玩家的紀錄
+function adminViewPlayer(pid) {
+  ONLINE.viewing = pid;
+  players = (ONLINE.roomPlayers || []).map(p => JSON.parse(JSON.stringify(p)));
+  if (!players.some(p => p.id === pid)) return;
+  gameStarted = true;
+  applyPlayerSwitch(pid);
+  setHeaderButton('← 玩家列表', () => openAdminRoom(ONLINE.room));
+  renderPlayerTabs(); renderPhaseContent(); hideFab(); updateHandBar();
+}
+
+function refreshAdminView() {
+  const keep = currentPlayerId, keepPhase = currentPhase;
+  players = (ONLINE.roomPlayers || []).map(p => JSON.parse(JSON.stringify(p)));
+  if (!players.some(p => p.id === keep)) return;
+  currentPlayerId = keep; currentPhase = keepPhase;
+  const a = document.activeElement;
+  if (a && /INPUT|TEXTAREA|SELECT/.test(a.tagName)) return; // 正在操作時不打斷
+  renderPlayerTabs(); renderPhaseContent(); updateHandBar();
+}
+
+// ── 啟動 ──
+function startOnlineIfNeeded() {
+  const p = onlineParams();
+  if (!p) return false;
+  if (p.mode === 'player') startOnlinePlayer(p.room);
+  else startOnlineAdmin();
+  return true;
+}
+setInterval(pushSelfIfChanged, 1500);
 </script>
-<' + '/body>
-<' + '/html>
 </body>
 </html>
